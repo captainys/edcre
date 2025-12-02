@@ -22,11 +22,13 @@
 #include <assert.h>
 #include <sys/types.h>
 #include <fcntl.h>
-#include <unistd.h>
+// #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+#define VERSION "20251202-ys"
 
 unsigned char existing_sector_header[4]; // store the existing header of the file
 
@@ -516,7 +518,7 @@ int main(int argc, char **argv)
     const int pregap = 150;
     char *data_track_file = 0;
     
-    int32_t data_track_fd;
+    FILE *data_track_fp;
     int32_t percentage;
     uint8_t buffer1[2352]; // original input sector buf
     uint8_t buffer2[2352]; // output sector buf with potentially fixed EDC/ECC data
@@ -524,6 +526,7 @@ int main(int argc, char **argv)
     uint32_t lba = pregap; // Correct EDC/ECC throughout entire image starting at the first sector 0 (by default)
     uint32_t number_of_sectors_fixed = 0; // keep track of number of sectors with updated EDC/ECC data
     uint32_t custom_sector_offset = 0; // by default start at 0 (LBA 150)
+    uint32_t number_of_sectors_to_cover = 0;
     uint32_t number_of_mode_1_sectors = 0;
     uint32_t number_of_mode_2_form_1_sectors = 0;
     uint32_t number_of_mode_2_form_2_sectors = 0;
@@ -550,7 +553,9 @@ int main(int argc, char **argv)
             "-t   Test the disc image for sectors that contain invalid EDC/ECC. Does not modify the data track bin file in any way.\n\n"
             
             "-s    Start EDC/ECC regeneration at sector number following the -s argument instead of at sector 0. In example, -s 16 starts regeneration at sector 16 (LBA 166) which would be the system volume for a PSX disc image (and what is recommended most of the time). TOCPerfect Patcher users want -s 15 here however.\n\n"
-            
+
+            "-n    Number of sectors to cover.\n\n"
+
             "-k   Keep existing sector header data from data file. This prevents EDCRE from regenerating the MM:SS:FF in the sector header. Useful for test_validity_onlying or regenerating EDC/ECC in a disc image file snippet (i.e. the last data track pregap of a Dreamcast GD-ROM image doesn't start at sector 0 and is a separate file).\n"
             );
         return 1;
@@ -583,6 +588,12 @@ int main(int argc, char **argv)
             printf("Starting EDC/EEC Regeneration at LBA %u (0x%08X)\n", lba, custom_sector_offset);
         }
 
+        if((strcmp(argv[i],"-n")==0) && (i < (argc - 2)))
+        {
+			number_of_sectors_to_cover=strtoul(argv[i + 1], NULL, 0); // next argument
+			printf("Will look into %u sectors.\n",number_of_sectors_to_cover);
+		}
+
         /* syntax error handling */
         if((strcmp(argv[i],"-v")==0) && (i == (argc - 1)) && (!is_file (argv[i]) ) )
         {
@@ -611,59 +622,49 @@ int main(int argc, char **argv)
 
     data_track_file = argv[(argc - 1)]; // last argument
 
-    // Windows read() implemented by mingw compiler opens in text mode unless you specify O_BINARY. That is specific to Windows and not valid for Linux so we account for it here. See https://stackoverflow.com/a/67707609 .
-    #ifdef WIN32
-        // Open file as read only if only verifying
-        if(test_validity_only)
+    // Open file as read only if only verifying
+    if(test_validity_only)
+    {
+        if((data_track_fp = fopen(data_track_file, "rb"))==NULL)
         {
-            if((data_track_fd = open(data_track_file, O_RDONLY | O_BINARY)) < 0)
-            {
-                fprintf(stderr, "Cannot open data track bin file\n");
-                return 1;
-            }
-        } else {
-            if((data_track_fd = open(data_track_file, O_RDWR | O_BINARY)) < 0)
-            {
-                fprintf(stderr, "Cannot open data track bin file\n");
-                return 1;
-            }
+            fprintf(stderr, "Cannot open data track bin file\n");
+            return 1;
         }
-    #else
-        // Open file as read only if only verifying
-        if(test_validity_only)
+    } else {
+        if((data_track_fp = fopen(data_track_file, "r+b"))==NULL)
         {
-            if((data_track_fd = open(data_track_file, O_RDONLY)) < 0)
-            {
-                fprintf(stderr, "Cannot open data track bin file\n");
-                return 1;
-            }
-        } else {
-            if((data_track_fd = open(data_track_file, O_RDWR)) < 0)
-            {
-                fprintf(stderr, "Cannot open data track bin file\n");
-                return 1;
-            }  
+            fprintf(stderr, "Cannot open data track bin file\n");
+            return 1;
         }
-    #endif
+    }
 
     // Use lseek() to move the file pointer to the end of the file
-    file_size = lseek(data_track_fd, 0, SEEK_END);
+    fseek(data_track_fp, 0, SEEK_END);
+    file_size = ftell(data_track_fp);
     
     if(file_size == (off_t) -1) 
     {
         perror("Error getting the file size");
-        close(data_track_fd); // Close the file descriptor
+        fclose(data_track_fp); // Close the file descriptor
         return 1;
     }
 
     unsigned int total_number_of_sectors = (file_size / 2352);
 
-    lseek(data_track_fd, custom_sector_offset, SEEK_SET);
+    fseek(data_track_fp, custom_sector_offset, SEEK_SET);
 
     while(1)
     {
+		if(0<number_of_sectors_to_cover)
+		{
+			--number_of_sectors_to_cover;
+			if(0==number_of_sectors_to_cover)
+			{
+				break;
+			}
+		}
 
-        if(read(data_track_fd, buffer1, 2352) != 2352)
+        if(fread(buffer1, 1, 2352, data_track_fp) != 2352)
         {
             break; // EOF
         }
@@ -794,20 +795,24 @@ int main(int argc, char **argv)
 
         if(!test_validity_only)
         {
-            lseek(data_track_fd, -2352, SEEK_CUR); // when we read() before, we advanced the fpos. We want to rewrite the previously read sector so go back a sector's worth and then write().
+			auto pos=ftell(data_track_fp);
+
+            fseek(data_track_fp, -2352, SEEK_CUR); // when we read() before, we advanced the fpos. We want to rewrite the previously read sector so go back a sector's worth and then write().
         
-            if(write(data_track_fd, buffer2, 2352) != 2352)
+            if(fwrite(buffer2, 1, 2352, data_track_fp) != 2352)
             {
                 printf("\nError writing sector at LBA: %u\n", lba);
-                close(data_track_fd);
+                fclose(data_track_fp);
                 return 1;
             } 
+
+			fseek(data_track_fp,0,SEEK_SET);
         }
         
         lba++;
     }
 
-    close(data_track_fd);
+    fclose(data_track_fp);
 
     if(verbose)
     {
