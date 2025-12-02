@@ -3,13 +3,12 @@
 #include <stdio.h>
 
 
-int main(void)
+int main(int ac,char *av[])
 {
-
-	FILE *ifp=fopen("TSUGARU_OS.mdf","rb");
+	FILE *ifp=fopen(av[1],"rb");
 	if(NULL!=ifp)
 	{
-		FILE *ofp=fopen("intentionally_broken.mdf","wb");
+		FILE *ofp=fopen(av[2],"wb");
 		if(NULL!=ofp)
 		{
 			unsigned char buf[2352];
@@ -26,11 +25,14 @@ int main(void)
 		else
 		{
 			printf("Error opening output.\n");
+			return 1;
 		}
 		fclose(ifp);
 	}
 	else
 	{
 		printf("Error opening input.\n");
+		return 1;
 	}
+	return 0;
 }
