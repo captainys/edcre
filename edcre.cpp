@@ -806,7 +806,7 @@ int main(int argc, char **argv)
                 return 1;
             } 
 
-			fseek(data_track_fp,0,SEEK_SET);
+			fseek(data_track_fp,pos,SEEK_SET); // fwrite only updates the write pointer.  Need to reset the read pointer by this.
         }
         
         lba++;
